@@ -1,0 +1,332 @@
+import sqlite3
+from datetime import datetime
+
+# -----SETTINGS-------
+HOTEL_NAME = "Tom and Jerry HOTEL"
+LOGIN_PASSWORD = "Hotel123"
+ROOM_PRICE = 1000
+ROOMS = list(range(101, 111))
+
+FOOD_MENU = {
+    1: ("Pizza", 150),
+    2: ("Burger", 100),
+    3: ("Tea", 20),
+    4: ("Coffee", 40),
+    5: ("Thali", 180),
+}
+
+# ----------DATABASE---------
+conn = sqlite3.connect("hotel.db")
+conn.row_factory = sqlite3.Row
+db = conn.cursor()
+
+db.execute("""
+CREATE TABLE IF NOT EXISTS bookings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    room INTEGER NOT NULL,
+    days INTEGER NOT NULL,
+    checkin TEXT NOT NULL,
+    status TEXT DEFAULT 'Active'
+)
+""")
+
+
+db.execute("""
+CREATE TABLE IF NOT EXISTS food_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    booking_id INTEGER NOT NULL,
+    item TEXT NOT NULL,
+    quantity INTEGER NOT NULL,
+    price REAL NOT NULL,
+    FOREIGN KEY (booking_id) REFERENCES bookings(id)
+)
+""")
+conn.commit()
+
+print("BOOKING TABLE COLUMN:")
+print([
+    row["name"]
+    for row in db.execute("" \
+    "PRAGMA table_info(bookings)"
+    ).fetchall()
+])
+
+
+# ------------HELPER FUNCTIONS-------------
+def get_booking(booking_id):
+    return db.execute(
+        "SELECT * FROM bookings WHERE id = ?",
+        (booking_id,)
+    ).fetchone()
+
+
+def active_booking(booking_id):
+    booking = get_booking(booking_id)
+
+    if booking is None:
+        print("Booking not found.")
+        return None
+
+    if booking["status"] != "Active":
+        print("This booking is already checked out.")
+        return None
+
+    return booking
+
+
+def room_is_occupied(room_number):
+    result = db.execute(
+        "SELECT id FROM bookings WHERE room = ? AND status = 'Active'",
+        (room_number,)
+    ).fetchone()
+
+    return result is not None
+
+
+# -------------------ROOM MANAGEMENT---------------
+def show_rooms():
+    print("\n--- ROOM STATUS ---")
+    for room in ROOMS:
+        status = "Occupied" if room_is_occupied(room) else "Available"
+        print(f"Room {room}: {status}")
+
+
+def book_room():
+    print("\n--- NEW ROOM BOOKING ---")
+    show_rooms()
+
+    name = input("Customer name: ").strip()
+    phone = input("Phone number: ").strip()
+
+    if not name or not phone:
+        print("Name and phone are required.")
+        return
+
+    try:
+        room = int(input("Choose room number (101-110): "))
+        days = int(input("Number of days: "))
+    except ValueError:
+        print("Enter valid numbers.")
+        return
+
+    if room not in ROOMS or days <= 0:
+        print("Invalid room number or days.")
+        return
+
+    if room_is_occupied(room):
+        print("Sorry, this room is occupied.")
+        return
+
+    db.execute("""
+        INSERT INTO bookings
+        (name, phone, room, days, checkin, status)
+        VALUES (?, ?, ?, ?, ?, 'Active')
+    """, (
+        name, phone, room, days,
+        datetime.now().strftime("%Y-%m-%d %H:%M")
+    ))
+    conn.commit()
+
+    print("\nBooking successful!")
+    print("Booking ID:", db.lastrowid)
+    print("Customer:", name)
+    print("Room:", room)
+    print("Room charge: Rs.", days * ROOM_PRICE)
+
+
+# -------------------CUSTOMER LIST--------------
+def show_customers():
+    print("\n--- ALL BOOKINGS ---")
+    rows = db.execute(
+        "SELECT * FROM bookings ORDER BY id DESC"
+    ).fetchall()
+
+    if not rows:
+        print("No bookings found.")
+        return
+
+    for b in rows:
+        print(
+            f"ID: {b['id']} | Name: {b['name']} | "
+            f"Phone: {b['phone']} | Room: {b['room']} | "
+            f"Days: {b['days']} | Status: {b['status']}"
+        )
+
+
+# --------------FOOD ORDER------------
+def order_food():
+    print("\n--- FOOD ORDER ---")
+
+    try:
+        booking_id = int(input("Enter booking ID: "))
+    except ValueError:
+        print("Invalid booking ID.")
+        return
+
+    booking = active_booking(booking_id)
+    if booking is None:
+        return
+
+    for number, (name, price) in FOOD_MENU.items():
+        print(f"{number}. {name} - Rs. {price}")
+
+    try:
+        choice = int(input("Choose food number: "))
+        quantity = int(input("Quantity: "))
+    except ValueError:
+        print("Enter valid numbers.")
+        return
+
+    if choice not in FOOD_MENU or quantity <= 0:
+        print("Invalid food choice or quantity.")
+        return
+
+    item, price = FOOD_MENU[choice]
+    db.execute("""
+        INSERT INTO food_orders
+        (booking_id, item, quantity, price)
+        VALUES (?, ?, ?, ?)
+    """, (booking_id, item, quantity, price))
+    conn.commit()
+
+    print(f"{quantity} x {item} ordered successfully.")
+    print("Food total: Rs.", quantity * price)
+
+
+# ------------BILL GENERATION---------------
+def generate_bill():
+    try:
+        booking_id = int(input("Enter booking ID: "))
+    except ValueError:
+        print("Invalid booking ID.")
+        return
+
+    booking = get_booking(booking_id)
+    if booking is None:
+        print("Booking not found.")
+        return
+
+    orders = db.execute("""
+        SELECT item, SUM(quantity) AS qty,
+               SUM(quantity * price) AS total
+        FROM food_orders
+        WHERE booking_id = ?
+        GROUP BY item
+    """, (booking_id,)).fetchall()
+
+    room_total = booking["days"] * ROOM_PRICE
+    food_total = sum(order["total"] for order in orders)
+
+    print("\n========== HOTEL BILL ==========")
+    print(HOTEL_NAME)
+    print("Booking ID:", booking["id"])
+    print("Customer:", booking["name"])
+    print("Phone:", booking["phone"])
+    print("Room:", booking["room"])
+    print("Days:", booking["days"])
+    print("Room charges: Rs.", room_total)
+
+    print("\nFood orders:")
+    if orders:
+        for order in orders:
+            print(
+                f"{order['item']} x {order['qty']} "
+                f"= Rs. {order['total']}"
+            )
+    else:
+        print("No food orders.")
+
+    print("Food total: Rs.", food_total)
+    print("GRAND TOTAL: Rs.", room_total + food_total)
+    print("Status:", booking["status"])
+    print("================================")
+
+
+# ---------------CHECKOUT--------------------
+def checkout():
+    try:
+        booking_id = int(input("Enter booking ID to checkout: "))
+    except ValueError:
+        print("Invalid booking ID.")
+        return
+
+    booking = active_booking(booking_id)
+    if booking is None:
+        return
+
+    room_total = booking["days"] * ROOM_PRICE
+    food_total = db.execute("""
+        SELECT COALESCE(SUM(quantity * price), 0) AS total
+        FROM food_orders WHERE booking_id = ?
+    """, (booking_id,)).fetchone()["total"]
+
+    print("Room charges: Rs.", room_total)
+    print("Food charges: Rs.", food_total)
+    print("Total amount: Rs.", room_total + food_total)
+
+    confirm = input("Confirm checkout? (yes/no): ").strip().lower()
+
+    if confirm == "yes":
+        db.execute(
+            "UPDATE bookings SET status = 'Checked Out' WHERE id = ?",
+            (booking_id,)
+        )
+        conn.commit()
+        print("Checkout successful. Thank you!")
+    else:
+        print("Checkout cancelled.")
+
+
+# -------------------MAIN PROGRAM-------------------------------
+def main():
+    print("=" * 38)
+    print(f" WELCOME TO {HOTEL_NAME}")
+    print("=" * 38)
+
+    password = input("Enter hotel password: ")
+    if password != LOGIN_PASSWORD:
+        print("Incorrect password. Access denied.")
+        return
+
+    print("\nLogin successful!")
+
+    while True:
+        print("\n========== MAIN MENU ==========")
+        print("1. Show Room Status")
+        print("2. Book a Room")
+        print("3. View All Customers")
+        print("4. Order Food")
+        print("5. Generate Bill")
+        print("6. Checkout Customer")
+        print("7. Exit")
+
+        choice = input("Enter your choice (1-7): ").strip()
+
+        if choice == "1":
+            show_rooms()
+        elif choice == "2":
+            book_room()
+        elif choice == "3":
+            show_customers()
+        elif choice == "4":
+            order_food()
+        elif choice == "5":
+            generate_bill()
+        elif choice == "6":
+            checkout()
+        elif choice == "7":
+            print("Thank you for using the Hotel System!")
+            break
+        else:
+            print("Invalid choice. Please enter 1-7.")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (KeyboardInterrupt, EOFError):
+        print("\nProgram stopped.")
+    finally:
+        conn.close()
